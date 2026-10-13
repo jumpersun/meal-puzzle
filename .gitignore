@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.sites-runtime/
+.sites-checkout/
+*.tar.gz
+artifacts/
+dist/
+.DS_Store
+
+# Private hosting configuration is local to each developer.
+.openai/
+*.zip

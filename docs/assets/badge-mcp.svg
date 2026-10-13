@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="130" height="24" viewBox="0 0 130 24" role="img" aria-label="MCP: mcp.mcd.cn">
+  <title>MCP: mcp.mcd.cn</title>
+  <clipPath id="rounded"><rect width="130" height="24" rx="4"/></clipPath>
+  <g clip-path="url(#rounded)"><path fill="#424c40" d="M0 0h42v24H0z"/><path fill="#db5345" d="M42 0h88v24H42z"/></g>
+  <g font-family="Verdana,DejaVu Sans,sans-serif" font-size="11" text-anchor="middle"><text x="21.0" y="16" fill="#ffffff">MCP</text><text x="86.0" y="16" fill="#ffffff">mcp.mcd.cn</text></g>
+</svg>

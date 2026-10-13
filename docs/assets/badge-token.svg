@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="177" height="24" viewBox="0 0 177 24" role="img" aria-label="Live menu: Token required">
+  <title>Live menu: Token required</title>
+  <clipPath id="rounded"><rect width="177" height="24" rx="4"/></clipPath>
+  <g clip-path="url(#rounded)"><path fill="#424c40" d="M0 0h74v24H0z"/><path fill="#557b7d" d="M74 0h103v24H74z"/></g>
+  <g font-family="Verdana,DejaVu Sans,sans-serif" font-size="11" text-anchor="middle"><text x="37.0" y="16" fill="#ffffff">Live menu</text><text x="125.5" y="16" fill="#ffffff">Token required</text></g>
+</svg>

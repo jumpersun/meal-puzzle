@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f3e9"><meta name="description" content="用真实菜单拼出分享餐单，查看官方核价和优惠条件，把小快乐分给饭搭子。">
+  <title>套餐拼图 · 一桌刚刚好</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23db5345'/%3E%3Ctext x='8' y='47' font-size='43'%3E🍔%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./live.css"><script type="module" src="./live.js"></script>
+</head>
+<body>
+  <header class="nav"><a class="brand" href="./" aria-label="套餐拼图首页"><span class="brand-mark">✦</span><span>套餐拼图<small>MEAL PUZZLE</small></span></a><div class="nav-right"><span class="demo-label live-badge" id="connection-status"><i></i> 真实菜单</span><button class="text-button" id="help">怎么玩 ↗</button></div></header>
+  <main>
+    <section class="hero"><div><div class="eyebrow">SHARING TASTES BETTER.</div><h1>你的薯条，<br>刚好是我的<span>快乐。</span></h1><p>在真实菜单里，找到这桌人的小快乐。<br>说说每个人想吃什么，拼好、核价，再分给彼此。</p></div><div class="hero-art" aria-hidden="true"><div class="hero-ring"></div><div class="art-burger" id="hero-burger"></div><div class="art-fries" id="hero-fries"></div><div class="art-coffee" id="hero-coffee"></div><span class="hero-sticker">一起吃<br><b>刚刚好</b><span>✧</span></span><span class="hero-note">different tastes, one happy table.</span></div></section>
+    <section class="panel store-panel" aria-labelledby="store-title"><div class="section-heading"><div><span class="section-kicker">FIRST, PICK A PLACE</span><h2 id="store-title">今天，在哪家碰头？</h2></div><span class="count-badge">到店自取</span></div><form id="store-form" class="store-form"><label>城市<input id="city" value="上海" maxlength="40" required autocomplete="address-level2"></label><label>附近位置或餐厅<input id="keyword" value="人民广场" maxlength="80" required></label><button class="primary" type="submit" id="search-stores">查找餐厅 ↗</button></form><p class="muted store-hint">已填入示例位置，可以改成你想去的地方。</p><div id="store-results" class="store-results" aria-live="polite"></div><p id="store-error" class="error-message" role="alert"></p><div id="selected-store" class="selected-store" hidden></div></section>
+    <section class="panel wish-panel" id="wish-panel" aria-labelledby="wish-title">
+      <div class="section-heading"><div><span class="section-kicker">YOUR WISHES, ONE HAPPY TABLE</span><h2 id="wish-title">把每个人想吃的，拼成一桌。</h2></div><span class="count-badge" id="wish-count"></span></div>
+      <p class="wish-intro">你想要咖啡，他想要薯条。先许个小心愿，我们来找搭配、核清价格，再分给对的人。</p>
+      <div class="wish-toolbar"><button class="text-button" id="wish-example">填入示例心愿 ✦</button><button class="text-button" id="wish-add-person" data-action="add-person">＋ 饭搭子</button></div>
+      <div class="wish-people" id="wish-people"></div>
+      <div class="wish-bottom"><label>整桌预算 <span>可不填</span><div class="budget-input">¥ <input id="wish-budget" type="number" min="0.01" max="9999.99" step="0.01" inputmode="decimal" placeholder="例如 120" aria-label="整桌预算（元）"></div></label><button class="primary" id="generate-plans" disabled>帮我们拼一桌 ✦</button></div>
+      <p class="wish-help">按餐品品类匹配，每人每类最多 3 份、整桌最多 18 份心愿；具体品名、杯型与冷热在方案中确认。名字只留在当前页面。</p>
+      <p id="wish-status" role="status" aria-live="polite"></p><div id="plan-results"></div>
+    </section>
+    <div class="workspace-bar"><div class="steps"><span class="active"><b>01</b> 选真实餐品</span><i>—</i><span><b>02</b> 核清价格</span><i>—</i><span><b>03</b> 分享快乐</span></div><span class="small-note">菜单展示价 ≠ 最终核价</span></div>
+    <div class="live-workspace">
+      <section class="panel menu-panel"><div class="section-heading"><div><span class="section-kicker">SOMETHING FOR EVERYONE</span><h2>看看，这家有什么好吃的</h2></div><button class="text-button" id="refresh-menu" disabled>刷新菜单 ↻</button></div><div class="menu-filter"><label class="sr-only" for="menu-search">搜索餐品</label><input id="menu-search" placeholder="搜汉堡、咖啡、双人餐…" disabled><span id="menu-count" class="muted"></span></div><div class="category-tabs" id="categories" role="group" aria-label="菜单分类"></div><div id="menu-state" aria-live="polite" class="menu-state">选一家餐厅，就能看到此刻可售的真实菜单。</div><div id="menu-grid" class="menu-grid"></div></section>
+      <aside class="panel cart-panel"><div class="section-heading"><div><span class="section-kicker">OUR LITTLE FEAST</span><h2>拼成这一桌</h2></div><span class="count-badge" id="cart-count">0 份</span></div><p class="muted cart-note">选套餐、换饮料，都按当前餐单重新核价。</p><div id="cart-lines"></div><div class="quote-box" id="quote-box" aria-live="polite"></div><button class="primary quote-button" id="quote" disabled>获取官方核价</button><p class="quote-policy">未附加购卡 · 未指定优惠券<br>套餐特调按门店默认；报价快照不锁价。</p><details class="conditions"><summary>菜单优惠条件与本次报价</summary><div id="conditions-content">选入餐品后，会在这里列出每项优惠条件。</div></details></aside>
+    </div>
+    <section class="table-section live-table"><div class="table-heading"><div><span class="section-kicker">A LITTLE HAPPINESS FOR EVERYONE</span><h2>每个人，都有自己的小快乐</h2></div><div class="table-actions"><button class="text-button" id="add-person">＋ 饭搭子</button><button class="text-button" id="assign-wishes" disabled>按心愿分好 ✦</button><button class="text-button" id="redistribute" disabled>轮流分一圈 ↻</button></div></div><p class="muted table-tip">按心愿分好后，还可以点餐品或拖到餐盘调整。改归属不会改变价格。</p><div id="people" class="live-people"></div><div class="dining-table" id="table"></div><div id="spare"></div><div class="table-footer"><span id="table-status" aria-live="polite"></span><button class="text-button" id="undo" disabled>撤销上次移动 ↶</button></div></section>
+    <section class="finish-bar"><div><b>小快乐分好了，就分享这一桌。</b><p>清单保留门店、选配、核价时间和优惠条件；餐盘确认由本机记录。</p></div><button class="primary" id="share" disabled>生成真实餐单 ↗</button></section>
+    <footer><span>✦ 套餐拼图 <em>A little joy, shared.</em></span><p>独立创意工具 · 真实菜单与核价来自麦当劳 MCP<br>本页仅整理餐单，不提供下单或支付；刷新会清空当前餐桌。</p><a class="text-button" href="./demo.html">看看趣味演示 ↗</a></footer>
+  </main>
+  <dialog id="dialog"><div id="dialog-content"></div></dialog><div id="toast" role="status" aria-live="polite"></div>
+</body></html>

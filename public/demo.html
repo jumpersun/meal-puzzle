@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f3e9">
+  <meta name="description" content="把每个人想吃的，拼成一桌刚刚好。套餐拼图互动体验，使用虚构菜单与示例价格。">
+  <title>套餐拼图 · 一桌刚刚好</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23db5345'/%3E%3Ctext x='8' y='47' font-size='43'%3E🍔%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="nav"><a class="brand" href="./" aria-label="套餐拼图首页"><span class="brand-mark">✦</span><span>套餐拼图<small>MEAL PUZZLE</small></span></a><div class="nav-right"><span class="demo-label"><i></i> 演示菜单</span><button class="text-button" id="help">怎么玩 <span>↗</span></button></div></header>
+  <main>
+    <section class="hero"><div><div class="eyebrow">SHARING TASTES BETTER.</div><h1>你的薯条，<br>刚好是我的<span>快乐。</span></h1><p>各有各的口味，也能拼成一桌刚刚好。<br class="desktop">挑好想吃的，把套餐里的小快乐分给彼此。</p></div><div class="hero-art" aria-hidden="true"><div class="hero-ring"></div><div class="art-burger" id="hero-burger"></div><div class="art-fries" id="hero-fries"></div><div class="art-coffee" id="hero-coffee"></div><span class="hero-sticker">一起吃<br><b>刚刚好</b><span>✧</span></span><span class="hero-note">different tastes, one happy table.</span></div></section>
+    <div class="workspace-bar"><div class="steps"><span class="active"><b>01</b> 每个人想吃的</span><i>—</i><span><b>02</b> 拼出分享套餐</span><i>—</i><span><b>03</b> 分好，开饭</span></div><button class="text-button" id="scenario-button">换一桌试试 ↻</button></div>
+    <div class="workspace">
+      <section class="wishes panel"><div class="section-heading"><div><span class="section-kicker">THE WISH LIST</span><h2>今天，和谁一起吃？</h2></div><span class="count-badge" id="people-count"></span></div><p class="muted section-description">点开口味卡，告诉我们你想吃什么。</p><div id="people"></div><button class="add-person" id="add-person">＋ 再来一位饭搭子</button><div class="wishes-foot"><span>✳</span><p>喜欢的留给自己，<br>刚好多的留给朋友。</p></div></section>
+      <div class="main-column">
+        <section class="plan panel"><div class="section-heading"><div><span class="section-kicker">THE PERFECT MATCH</span><h2>这桌，可以这样拼</h2></div><span class="small-note">示例价格 · 非官方报价</span></div><div class="plan-tabs" role="group" aria-label="选择拼餐方式"><button data-mode="exact" aria-pressed="true">刚刚好 <span>不多买</span></button><button data-mode="budget" aria-pressed="false">预算优先 <span>看看有无余量</span></button><button data-mode="singles" aria-pressed="false">各自单点 <span>比一比</span></button></div><div id="plan"></div></section>
+        <section class="table-section"><div class="table-heading"><div><span class="section-kicker">A LITTLE HAPPINESS FOR EVERYONE</span><h2>每个人，都有自己的小快乐</h2></div><button class="text-button" id="redistribute">重新分好 ↻</button></div><p class="muted table-tip">拖动餐品，或点一下选择餐盘。把这一份快乐，放到对的位置。</p><div class="dining-table" id="table"></div><div id="spare"></div><div class="table-footer"><span id="table-status" aria-live="polite"></span><button class="text-button" id="undo" disabled>撤销上次移动 ↶</button></div></section>
+        <section class="finish-bar"><div><b id="finish-title">这一桌，准备好了吗？</b><p id="finish-detail">核对每个餐盘，再把清单分享给饭搭子。</p></div><button class="primary" id="share">生成分享清单 <span>↗</span></button></section>
+      </div>
+    </div>
+    <footer><span>✦ 套餐拼图 <em>A little joy, shared.</em></span><p>独立创意体验 · 菜单、套餐与价格均为虚构演示数据<br>未连接麦当劳 MCP，不提供实际下单或支付。</p><button class="text-button" id="reset">恢复初始餐桌</button></footer>
+  </main>
+  <dialog id="dialog"><div id="dialog-content"></div></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body></html>
