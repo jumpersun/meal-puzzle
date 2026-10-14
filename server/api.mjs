@@ -3,6 +3,7 @@ import { WISH_KINDS, MAX_WISHES, wishTotals, selectPlannerProducts, buildCandida
 const MCP_ENDPOINT = 'https://mcp.mcd.cn';
 const READ_TOOLS = new Set(['query-nearby-stores', 'query-meals', 'query-meal-detail', 'calculate-price']);
 const MAX_BODY = 32000;
+const FATAL_CODES = new Set(['TOKEN_INVALID', 'RATE_LIMITED', 'PROTOCOL_CHANGED']);
 export class ApiError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
 }
@@ -83,14 +84,18 @@ export function prepareItem(item, detail) {
   return { providerItem: { productCode: detail.code, quantity, ...(roundList.length ? { roundList } : {}), ...defaultModifications(detail.modification) }, units };
 }
 
-async function readRpc(response, id) {
+async function readRpc(response, id, signal) {
   const reader = response.body?.getReader();
   if (!reader) throw new ApiError(502, 'EMPTY_RESPONSE', '麦当劳服务返回为空，请重试。');
   const decoder = new TextDecoder(), sse = response.headers.get('content-type')?.includes('text/event-stream');
   let pending = '', size = 0;
+  const cancel = () => { reader.cancel(signal.reason).catch(() => {}); };
+  signal.addEventListener('abort', cancel, { once: true });
   try {
     while (true) {
+      signal.throwIfAborted();
       const { value, done } = await reader.read();
+      signal.throwIfAborted();
       if (done) break;
       size += value.byteLength;
       if (size > 4 * 1024 * 1024) throw new ApiError(502, 'RESPONSE_LIMIT', '菜单数据过大，请缩小查询范围。');
@@ -107,33 +112,40 @@ async function readRpc(response, id) {
     }
     if (!sse) { const parsed = JSON.parse(pending + decoder.decode()); if (parsed.id === id) return parsed; }
     throw new ApiError(502, 'INVALID_RESPONSE', '麦当劳服务响应不完整，请重试。');
-  } finally { await reader.cancel().catch(() => {}); }
+  } finally { signal.removeEventListener('abort', cancel); await reader.cancel().catch(() => {}); }
 }
 
-async function readRequestBody(request) {
+async function readRequestBody(request, signal) {
   if (!request.body) invalid('请求格式不正确。');
   const reader = request.body.getReader(), decoder = new TextDecoder();
   let total = 0, body = '';
+  const cancel = () => { reader.cancel(signal.reason).catch(() => {}); };
+  signal.addEventListener('abort', cancel, { once: true });
   try {
     while (true) {
+      signal.throwIfAborted();
       const { value, done } = await reader.read();
+      signal.throwIfAborted();
       if (done) return body + decoder.decode();
       total += value.byteLength;
       if (total > MAX_BODY) throw new ApiError(413, 'BODY_LIMIT', '餐单过大，请减少数量。');
       body += decoder.decode(value, { stream: true });
     }
-  } finally { await reader.cancel().catch(() => {}); }
+  } finally { signal.removeEventListener('abort', cancel); await reader.cancel().catch(() => {}); }
 }
 
-export async function createMcpClient(token, fetcher = fetch) {
+export async function createMcpClient(token, fetcher = fetch, { signal } = {}) {
   let session, sequence = 0, protocol = '2025-03-26';
   async function rpc(method, params, notification = false) {
+    const rpcSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(18000)]);
+    rpcSignal.throwIfAborted();
     const id = notification ? undefined : ++sequence;
     // The hosted edge runtime supports manual/follow only. Reject 3xx below so credentials never follow redirects.
-    const response = await fetcher(MCP_ENDPOINT, { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(18000),
+    const response = await fetcher(MCP_ENDPOINT, { method: 'POST', redirect: 'manual', signal: rpcSignal,
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': protocol, ...(session ? { 'Mcp-Session-Id': session } : {}) },
       body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, params }),
     });
+    if (rpcSignal.aborted) { await response.body?.cancel(); rpcSignal.throwIfAborted(); }
     if (!response.ok) {
       await response.body?.cancel();
       if ([401, 403].includes(response.status)) throw new ApiError(503, 'TOKEN_INVALID', '麦当劳连接已失效，请在服务端更新 Token 后重试。');
@@ -142,7 +154,7 @@ export async function createMcpClient(token, fetcher = fetch) {
     }
     if (method === 'initialize') session = response.headers.get('mcp-session-id');
     if (notification) { await response.body?.cancel(); return; }
-    const reply = await readRpc(response, id);
+    const reply = await readRpc(response, id, rpcSignal);
     if (reply.error || !reply.result) throw new ApiError(502, 'UPSTREAM_RPC', '麦当劳服务未完成请求，请重试。');
     return reply.result;
   }
@@ -158,26 +170,42 @@ export async function createMcpClient(token, fetcher = fetch) {
   } };
 }
 
-export function createApi(clientFactory = createMcpClient, now = () => Date.now()) {
+export function createApi(clientFactory = (token, options) => createMcpClient(token, fetch, options), now = () => Date.now(), { timeoutMs = 40000, plansTimeoutMs = 110000 } = {}) {
   return async function api(request, env) {
     const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
+    const controller = new AbortController(), signal = AbortSignal.any([request.signal, controller.signal]);
+    const lifecycle = { signal, abort: error => controller.abort(error) };
+    let deadline;
+    async function connect() {
+      signal.throwIfAborted();
+      const client = await clientFactory(env.MCD_MCP_TOKEN, { signal });
+      signal.throwIfAborted();
+      return { async call(name, args) {
+        signal.throwIfAborted();
+        const result = await client.call(name, args);
+        signal.throwIfAborted();
+        return result;
+      } };
+    }
     try {
       const url = new URL(request.url), route = url.pathname;
       if (route === '/api/status' && request.method === 'GET') return json({ configured: Boolean(env.MCD_MCP_TOKEN), diningMode: 'pickup', source: 'mcd-mcp' });
       if (!['/api/stores', '/api/menu', '/api/detail', '/api/quote', '/api/plans'].includes(route)) throw new ApiError(404, 'NOT_FOUND', '没有这个接口。');
       if (request.method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '请使用页面按钮发起查询。');
+      // Leave time for the browser to receive a useful error before its own timeout.
+      deadline = setTimeout(() => controller.abort(new DOMException('Request deadline exceeded', 'TimeoutError')), route === '/api/plans' ? plansTimeoutMs : timeoutMs);
       const origin = request.headers.get('origin');
       if (origin && origin !== url.origin) throw new ApiError(403, 'ORIGIN_DENIED', '请从本站页面发起查询。');
       if (!request.headers.get('content-type')?.startsWith('application/json')) throw new ApiError(415, 'INVALID_CONTENT_TYPE', '请求格式不正确。');
       if (Number(request.headers.get('content-length')) > MAX_BODY) throw new ApiError(413, 'BODY_LIMIT', '餐单过大，请减少数量。');
-      const body = await readRequestBody(request);
+      const body = await readRequestBody(request, signal);
       let args; try { args = JSON.parse(body); } catch { invalid('请求格式不正确。'); }
       if (!args || typeof args !== 'object' || Array.isArray(args)) invalid('请求格式不正确。');
       if (!env.MCD_MCP_TOKEN) throw new ApiError(503, 'NOT_CONFIGURED', '真实菜单连接尚未配置，请联系站点主人。');
       if (route === '/api/stores') {
         const city = textValue(args.city, 40).trim(), keyword = textValue(args.keyword, 80).trim();
         if (!city || !keyword) invalid('请输入城市和餐厅附近的位置。');
-        const client = await clientFactory(env.MCD_MCP_TOKEN);
+        const client = await connect();
         const result = await client.call('query-nearby-stores', { city, keyword, searchType: 2, beType: 1 });
         if (!Array.isArray(result)) throw new ApiError(502, 'INVALID_RESPONSE', '餐厅信息暂不可用。');
         return json({ stores: result.slice(0, 20).map(s => ({ code: s.storeCode, name: textValue(s.storeName), address: textValue(s.address), open: s.businessStatus === true, hours: `${textValue(s.businessStartTime, 8)}–${textValue(s.businessEndTime, 8)}` })), fetchedAt: now() });
@@ -193,17 +221,21 @@ export function createApi(clientFactory = createMcpClient, now = () => Date.now(
         if (Object.keys(args).some(k => !['storeCode', 'revision', 'items'].includes(k))) invalid('仅支持餐品核价，不接受购卡或优惠券操作。');
       }
       if (route === '/api/plans') validatePlanInput(args);
-      const client = await clientFactory(env.MCD_MCP_TOKEN);
+      const client = await connect();
       if (route === '/api/menu') return json({ ...normalizeMenu(await client.call('query-meals', context)), storeCode, fetchedAt: now() });
       if (route === '/api/detail') return json({ ...normalizeDetail(await client.call('query-meal-detail', { ...context, code: args.code })), storeCode });
       const catalog = normalizeMenu(await client.call('query-meals', context));
-      if (route === '/api/plans') return json(await createPlans(client, context, args, catalog, now));
-      return json(await calculateCart(client, context, args, catalog, now));
+      if (route === '/api/plans') return json(await createPlans(client, context, args, catalog, now, lifecycle));
+      for (const item of args.items) if (!catalog.products.some(p => p.code === item.code)) invalid('有餐品已不在当前菜单，请刷新菜单重新选择。');
+      const { rawDetails } = await loadDetails(client, context, args.items.map(item => item.code), lifecycle);
+      return json(await calculateCart(client, context, args, catalog, now, rawDetails));
     } catch (error) {
+      if (signal.aborted && !(error instanceof ApiError)) error = signal.reason;
       if (error instanceof ApiError) return json({ error: { code: error.code, message: error.message } }, error.status);
-      if (['TimeoutError', 'AbortError'].includes(error?.name)) return json({ error: { code: 'TIMEOUT', message: '麦当劳服务响应较慢，请稍后重试。本次没有生成新报价。' } }, 504);
+      if (error?.name === 'TimeoutError') return json({ error: { code: 'TIMEOUT', message: '麦当劳服务响应较慢，请稍后重试。本次没有生成新报价。' } }, 504);
+      if (request.signal.aborted || error?.name === 'AbortError') return json({ error: { code: 'CANCELLED', message: '本次查询已取消，没有生成新报价。' } }, 499);
       return json({ error: { code: 'SERVICE_UNAVAILABLE', message: '真实菜单服务暂时无法连接，请重试。本次没有生成新报价。' } }, 502);
-    }
+    } finally { clearTimeout(deadline); }
   };
 }
 export const handleApi = createApi();
@@ -227,28 +259,43 @@ function validatePlanInput(args) {
   if (args.budget !== null && args.budget !== undefined) integer(args.budget, 1, 999999, '预算需在 0.01–9999.99 元之间。');
 }
 
-async function createPlans(client, context, args, catalog, now) {
-  const products = selectPlannerProducts(catalog, args.people), rawDetails = new Map(), details = new Map();
-  let failedDetails = 0;
-  // Bound both the provider fan-out and the search space; one click cannot scan the entire menu.
-  for (let i = 0; i < products.length; i += 4) await Promise.all(products.slice(i, i + 4).map(async product => {
-    try {
-      const raw = await client.call('query-meal-detail', { ...context, code: product.code });
-      if (raw.code !== product.code) throw new ApiError(502, 'INVALID_RESPONSE', '餐品详情不匹配。');
-      rawDetails.set(product.code, raw); details.set(product.code, normalizeDetail(raw));
-    } catch (error) {
-      if (['TOKEN_INVALID', 'RATE_LIMITED', 'PROTOCOL_CHANGED'].includes(error.code) || ['AbortError', 'TimeoutError'].includes(error.name)) throw error;
-      failedDetails++;
+function isFatal(error, signal) { return signal.aborted || FATAL_CODES.has(error?.code); }
+
+async function loadDetails(client, context, requestedCodes, lifecycle, allowUnavailable = false) {
+  const codes = [...new Set(requestedCodes)], rawDetails = new Map(), details = new Map();
+  let next = 0, failedDetails = 0;
+  // Share one fresh detail per product within the request; at most four reads run at once.
+  async function readNext() {
+    while (next < codes.length) {
+      lifecycle.signal.throwIfAborted();
+      const code = codes[next++];
+      try {
+        const raw = await client.call('query-meal-detail', { ...context, code });
+        if (raw.code !== code) throw new ApiError(502, 'INVALID_RESPONSE', '餐品详情不匹配。');
+        details.set(code, normalizeDetail(raw)); rawDetails.set(code, raw);
+      } catch (error) {
+        if (!allowUnavailable || isFatal(error, lifecycle.signal)) { lifecycle.abort(error); throw error; }
+        failedDetails++;
+      }
     }
-  }));
+  }
+  await Promise.all(Array.from({ length: Math.min(4, codes.length) }, readNext));
+  return { rawDetails, details, failedDetails };
+}
+
+async function createPlans(client, context, args, catalog, now, lifecycle) {
+  const products = selectPlannerProducts(catalog, args.people);
+  const { rawDetails, details, failedDetails } = await loadDetails(client, context, products.map(product => product.code), lifecycle, true);
   const candidates = buildCandidateCarts(catalog, details, args.people), plans = [], failures = [];
-  for (const candidate of candidates) {
+  for (const candidate of candidates.slice(0, 6)) {
+    lifecycle.signal.throwIfAborted();
     try {
       const items = candidate.cart.map(({ id, code, quantity, selections }) => ({ id, code, quantity, selections }));
       const quote = await calculateCart(client, context, { ...args, items }, catalog, now, rawDetails);
       plans.push({ id: `option${plans.length + 1}`, cart: candidate.cart, matched: candidate.matched, wanted: candidate.wanted, missing: candidate.missing, extraCount: candidate.extraCount, quote });
+      if (plans.length === 3) break;
     } catch (error) {
-      if (['TOKEN_INVALID', 'RATE_LIMITED', 'PROTOCOL_CHANGED'].includes(error.code)) throw error;
+      if (isFatal(error, lifecycle.signal)) throw error;
       failures.push('有一个候选暂时无法核价，未作为可选方案展示。');
     }
   }
@@ -265,7 +312,7 @@ async function calculateCart(client, context, args, catalog, now, details = new 
   for (const item of args.items) {
     const product = catalog.products.find(p => p.code === item.code);
     if (!product) invalid('有餐品已不在当前菜单，请刷新菜单重新选择。');
-    const detail = details.get(item.code) || await client.call('query-meal-detail', { ...context, code: item.code });
+    const detail = details.get(item.code);
     const result = prepareItem(item, detail);
     prepared.push(result);
     conditions.push({ lineId: item.id, name: product.name, displayPrice: product.displayPrice, condition: product.condition, requiresCard: product.requiresCard });

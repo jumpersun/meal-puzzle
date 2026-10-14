@@ -14,20 +14,35 @@ const catalog = normalizeMenu(rawMenu), details = new Map([...rawDetails].map(([
 const people = [{ id: 'a', wants: { chicken: 1, fries: 1, coffee: 1 } }, { id: 'b', wants: { chicken: 1, cola: 1 } }, { id: 'c', wants: { nuggets: 1, fries: 1 } }];
 const input = () => ({ storeCode: '1450713', revision: 5, people: structuredClone(people), budget: 10000 });
 const request = body => new Request('https://site.test/api/plans', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-function provider({ failDetail, failQuote, failAllQuotes = false } = {}) {
+function provider({ failDetail, failQuote, failQuotes = [], failAllQuotes = false, menuData = rawMenu, detailData = rawDetails } = {}) {
   const calls = [];
   const api = createApi(async () => ({ async call(name, args) {
     calls.push({ name, args });
-    if (name === 'query-meals') return rawMenu;
-    if (name === 'query-meal-detail') { if (args.code === failDetail) throw new ApiError(502, 'UPSTREAM_BUSINESS', '停售'); return rawDetails.get(args.code); }
+    if (name === 'query-meals') return menuData;
+    if (name === 'query-meal-detail') { if (args.code === failDetail) throw new ApiError(502, 'UPSTREAM_BUSINESS', '停售'); return detailData.get(args.code); }
     if (name === 'calculate-price') {
-      if (failAllQuotes || args.items.some(i => i.productCode === failQuote)) throw new ApiError(502, 'UPSTREAM_BUSINESS', '无法核价');
-      const productList = args.items.map(i => ({ productCode: i.productCode, productName: rawDetails.get(i.productCode).name, quantity: i.quantity, subtotal: i.quantity * (i.productCode === sample.detail.code ? 12350 : 1700) }));
+      if (failAllQuotes || args.items.some(i => i.productCode === failQuote || failQuotes.includes(i.productCode))) throw new ApiError(502, 'UPSTREAM_BUSINESS', '无法核价');
+      const productList = args.items.map(i => ({ productCode: i.productCode, productName: detailData.get(i.productCode).name, quantity: i.quantity, subtotal: i.quantity * (i.productCode === sample.detail.code ? 12350 : 1700) }));
       return { price: productList.reduce((n, p) => n + p.subtotal, 0), productList };
     }
     throw new Error('Unexpected tool');
   } }), () => 1000);
   return { calls, run: body => api(request(body), { MCD_MCP_TOKEN: 'test-only' }) };
+}
+const choice = (code, name, maxQuantity = 1, diffPrice = '+ ¥0') => ({ code, name, maxQuantity, quantity: 0, isDefault: 0, diffPrice });
+const round = (id, minQuantity, maxQuantity, choices) => ({ id, name: '选餐', minQuantity, maxQuantity, choices });
+function comboPlans(rounds, wants) {
+  const raw = { code: '99001', name: '测试随心套餐', rounds }, product = { code: raw.code, name: raw.name, originalPrice: 2000 };
+  const plans = buildCandidateCarts({ products: [product] }, new Map([[raw.code, normalizeDetail(raw)]]), [{ id: 'a', wants }]);
+  for (const plan of plans) for (const c of plan.cart) prepareItem({ id: c.id, code: c.code, quantity: c.quantity, selections: c.selections }, raw);
+  return plans;
+}
+function reserveMenu() {
+  const products = Array.from({ length: 8 }, (_, i) => ({ code: String(100 + i), name: `牛肉堡套餐${i + 1}`, price: `${10 + i}.00` }));
+  return {
+    menuData: { categories: [{ name: '套餐', meals: products.map(p => ({ code: p.code })) }], meals: Object.fromEntries(products.map(p => [p.code, { name: p.name, currentPrice: p.price, originalPrice: p.price }])) },
+    detailData: new Map(products.map(p => [p.code, { code: p.code, name: p.name, rounds: [round(1, 1, 1, [choice('1100', '巨无霸')])] }])),
+  };
 }
 
 test('food wishes match individual portions without treating a meal or coffee dessert as a drink', () => {
@@ -36,7 +51,7 @@ test('food wishes match individual portions without treating a meal or coffee de
 });
 test('real eight-piece combo is configured for one cola and one coffee and every candidate satisfies provider quantities', () => {
   const plans = buildCandidateCarts(catalog, details, people);
-  assert.ok(plans.length >= 2 && plans.length <= 3);
+  assert.ok(plans.length >= 2 && plans.length <= 6);
   const combo = plans.flatMap(p => p.cart).find(c => c.code === sample.detail.code);
   assert.ok(combo);
   const prepared = prepareItem({ id: combo.id, code: combo.code, quantity: combo.quantity, selections: combo.selections }, sample.detail);
@@ -47,6 +62,53 @@ test('real eight-piece combo is configured for one cola and one coffee and every
     assert.equal(plan.missing.length, 0);
     for (const c of plan.cart) prepareItem({ id: c.id, code: c.code, quantity: c.quantity, selections: c.selections }, rawDetails.get(c.code));
   }
+});
+test('flexible rounds leave restricted later rounds to satisfy the remaining wishes with one combo', () => {
+  const chicken = choice('1440', '麦辣鸡腿汉堡'), beef = choice('1100', '巨无霸');
+  const plan = comboPlans([round(1, 1, 1, [chicken, beef]), round(2, 1, 1, [chicken])], { chicken: 1, beef: 1 })[0];
+  assert.equal(plan.matched, 2);
+  assert.equal(plan.extraCount, 0);
+  assert.equal(plan.cart.length, 1);
+  assert.equal(plan.cart[0].quantity, 1);
+  assert.deepEqual(plan.cart[0].selections[0].choices, [{ code: '1100', quantity: 1 }]);
+});
+test('useful optional portions fill wishes between round min and max without filling unused capacity', () => {
+  const beef = choice('1100', '巨无霸'), coffee = choice('507411', '美式咖啡', 3);
+  for (const rounds of [
+    [round(1, 1, 1, [beef]), round(2, 0, 3, [coffee])],
+    [round(1, 1, 3, [beef, coffee])],
+  ]) {
+    const plan = comboPlans(rounds, { beef: 1, coffee: 1 })[0];
+    assert.equal(plan.matched, 2);
+    assert.equal(plan.extraCount, 0);
+    assert.equal(plan.cart[0].quantity, 1);
+    assert.deepEqual(unitsForCart(plan.cart).map(u => u.name).sort(), ['巨无霸', '美式咖啡'].sort());
+  }
+});
+test('optional earlier portions stay empty when mandatory later rounds already meet the wishes', () => {
+  const beef = choice('1100', '巨无霸'), coffee = choice('507411', '美式咖啡');
+  const plan = comboPlans([round(1, 0, 1, [coffee]), round(2, 1, 1, [beef]), round(3, 1, 1, [coffee])], { beef: 1, coffee: 1 })[0];
+  assert.equal(plan.matched, 2);
+  assert.equal(plan.extraCount, 0);
+  assert.deepEqual(plan.cart[0].selections[0].choices, []);
+});
+test('same-kind choices respect individual limits and prefer the lower added cost', () => {
+  const expensive = choice('501', '美式咖啡大杯', 3, '+ ¥8'), cheap = choice('502', '美式咖啡中杯', 1, '+ ¥1');
+  const plan = comboPlans([round(1, 1, 3, [expensive, cheap])], { coffee: 2 })[0];
+  assert.equal(plan.matched, 2);
+  assert.equal(plan.extraCount, 0);
+  assert.equal(plan.cart[0].quantity, 1);
+  assert.deepEqual(plan.cart[0].selections[0].choices, [{ code: '502', quantity: 1 }, { code: '501', quantity: 1 }]);
+});
+test('bounded selection handles broad rounds at the eighteen-wish table limit', () => {
+  const names = ['麦辣鸡腿汉堡', '巨无霸', '中薯条', '麦乐鸡4块', '可乐中杯', '美式咖啡', '猪柳蛋麦满分', '薯饼', '皮蛋鸡肉粥'];
+  const choices = names.flatMap((name, i) => Array.from({ length: 3 }, (_, n) => choice(String(1000 + i * 10 + n), name, 1, `+ ¥${n}`)));
+  const wants = Object.fromEntries(WISH_KINDS.map(k => [k.id, 2]));
+  const plan = comboPlans([round(1, 1, 20, choices)], wants)[0];
+  assert.equal(plan.matched, 18);
+  assert.equal(plan.extraCount, 0);
+  assert.equal(plan.cart[0].quantity, 1);
+  assert.ok(unitsForCart(plan.cart).length <= 60);
 });
 test('assignment conserves all portions, fulfils each person and keeps surplus in the shared tray', () => {
   for (const plan of buildCandidateCarts(catalog, details, people)) {
@@ -125,4 +187,34 @@ test('partial provider failures are disclosed, and no plan is selectable without
   const failure = provider({ failAllQuotes: true });
   const response = await failure.run(input());
   assert.equal(response.status, 502); assert.equal((await response.json()).error.code, 'NO_PLANS');
+});
+test('candidate generation keeps at most six distinct plans including quote reserves', () => {
+  const { menuData, detailData } = reserveMenu();
+  const plans = buildCandidateCarts(normalizeMenu(menuData), new Map([...detailData].map(([code, d]) => [code, normalizeDetail(d)])), [{ id: 'a', wants: { beef: 1 } }]);
+  assert.equal(plans.length, 6);
+  assert.equal(new Set(plans.map(p => p.cart[0].code)).size, 6);
+  assert.ok(plans.every(p => p.matched === 1 && p.extraCount === 0));
+});
+test('failed quotes are replaced from reserves until three verified plans are available', async () => {
+  const mock = provider({ ...reserveMenu(), failQuotes: ['100', '101', '102'] });
+  const response = await mock.run({ ...input(), people: [{ id: 'a', wants: { beef: 1 } }] });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.plans.length, 3);
+  assert.deepEqual(data.plans.map(p => p.cart[0].code), ['103', '104', '105']);
+  assert.equal(data.scope.failedQuotes, 3);
+  assert.equal(data.scope.candidatesQuoted, 3);
+  assert.equal(mock.calls.filter(c => c.name === 'calculate-price').length, 6);
+});
+test('quoting stops after three successes and never tries more than six candidates', async () => {
+  const body = { ...input(), people: [{ id: 'a', wants: { beef: 1 } }] };
+  const success = provider(reserveMenu()), response = await success.run(body);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).plans.length, 3);
+  assert.equal(success.calls.filter(c => c.name === 'calculate-price').length, 3);
+  const failure = provider({ ...reserveMenu(), failAllQuotes: true });
+  const failedResponse = await failure.run(body);
+  assert.equal(failedResponse.status, 502);
+  assert.equal((await failedResponse.json()).error.code, 'NO_PLANS');
+  assert.equal(failure.calls.filter(c => c.name === 'calculate-price').length, 6);
 });

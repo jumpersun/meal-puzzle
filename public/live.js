@@ -1,7 +1,8 @@
 import { createWishPlanner } from './wishes.js';
+import { createProductImages } from './product-images.js';
 import { assignWishes, preserveOwners, personWishStatus, WISH_KINDS } from './wish-planner.js';
 import { foodArt } from './art.js';
-import { formatMoney, selectionsFor, selectionError, invalidateQuote, acceptQuote, isQuoteCurrent, unitsForCart, makeShareText } from './live-state.js';
+import { formatMoney, selectionsFor, reconcileSelections, selectionError, invalidateQuote, acceptQuote, isQuoteCurrent, unitsForCart, makeShareText } from './live-state.js';
 
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -10,13 +11,25 @@ const state = { store: null, cart: [], revision: 0, quote: null };
 let stores = [], menu = null, category = 0, units = [], people = [{ id:'p1',name:'阿橙' },{ id:'p2',name:'小蓝' },{ id:'p3',name:'小满' }];
 let confirmed = [], previous = null, draft = null, personDraft = null, sequence = 10, quotePending = false, quoteError = '', expiration, quoteTicket = 0, detailTicket = 0, storeTicket = 0, menuTicket = 0, toastTimer, lastFocus, modalKind;
 const controllers = new Map();
+let quoteTimer;
 const dialog = $('#dialog');
 const colors = [['#f7dfcc','#b87847'],['#dce8eb','#5e858c'],['#e4e9d5','#7d8c56'],['#f1dfe1','#b47c81'],['#e7dff0','#8e74a5'],['#f3e9c9','#ac9858']];
+const productImages = createProductImages({ load: ({storeCode,code,signal}) => api('detail',{storeCode,code},`image:${storeCode}:${code}`,signal), onChange: refreshTablePictures });
 // Product pictures come from the menu by product code; never infer food type from its name.
 const productPicture = product => {
-  const image=product.image||menu?.products.find(p=>p.code===product.code)?.image;
-  return `<span class="product-image${image?'':' is-unavailable'}">${image?`<img src="${esc(image)}" alt="${esc(product.name)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">`:''}<span class="image-placeholder" ${image?'hidden':''}>暂无图片</span></span>`;
+  const image=product.image||menu?.products.find(p=>p.code===product.code)?.image||productImages.get(state.store?.code,product.code);
+  return `<span class="product-image${image?'':' is-unavailable'}" data-product-code="${esc(product.code)}">${image?`<img src="${esc(image)}" alt="${esc(product.name)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">`:''}<span class="image-placeholder" ${image?'hidden':''}>暂无图片</span></span>`;
 };
+function refreshTablePictures() {
+  // Patch only pictures: a late image must not replace focused buttons or a dragged dish.
+  for(const picture of document.querySelectorAll('.live-table .product-image[data-product-code]')) {
+    if(picture.querySelector('img'))continue;
+    const unit=units.find(u=>u.code===picture.dataset.productCode),image=unit&&productImages.get(state.store?.code,unit.code);
+    if(!image)continue;
+    const img=document.createElement('img');img.src=image;img.alt=unit.name;img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.draggable=false;
+    picture.prepend(img);picture.classList.remove('is-unavailable');picture.querySelector('.image-placeholder').hidden=true;
+  }
+}
 document.addEventListener('error',event=>{
   const img=event.target;if(!(img instanceof HTMLImageElement)||!img.closest('.product-image'))return;
   const picture=img.parentElement;picture.classList.add('is-unavailable');picture.querySelector('.image-placeholder').hidden=false;img.hidden=true;
@@ -28,23 +41,24 @@ function openModal(html, kind) { modalKind=kind; lastFocus=document.activeElemen
 function closeModal() { detailTicket++; controllers.get('detail')?.abort(); draft=null; modalKind=null; dialog.close(); if(lastFocus?.isConnected)lastFocus.focus(); }
 dialog.addEventListener('cancel',e=>{e.preventDefault();closeModal();});
 dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal();}});
-async function api(path, args, channel) {
+async function api(path, args, channel, signal) {
   controllers.get(channel)?.abort(); const controller=new AbortController(); controllers.set(channel,controller);
+  const requestSignal=signal?AbortSignal.any([controller.signal,signal]):controller.signal;
   const timeout=setTimeout(()=>controller.abort('timeout'),channel==='plans'?120000:45000);
   try {
-    const response=await fetch(`/api/${path}`,{method:args?'POST':'GET',headers:args?{'Content-Type':'application/json'}:{},body:args?JSON.stringify(args):undefined,signal:controller.signal});
+    const response=await fetch(`/api/${path}`,{method:args?'POST':'GET',headers:args?{'Content-Type':'application/json'}:{},body:args?JSON.stringify(args):undefined,signal:requestSignal});
     if(!response.headers.get('content-type')?.includes('application/json'))throw new Error('请刷新页面并完成站点登录，然后重试。');
     const data=await response.json();
     if(!response.ok)throw new Error(data.error?.message||'查询未完成，请重试。');
     return data;
   } catch(error) {
-    if(controller.signal.aborted){if(controller.signal.reason==='timeout')throw new Error('请求用时较长，请稍后重试。');throw new DOMException('Cancelled','AbortError');}
+    if(requestSignal.aborted){if(controller.signal.reason==='timeout')throw new Error('请求用时较长，请稍后重试。');throw new DOMException('Cancelled','AbortError');}
     if(error instanceof TypeError)throw new Error('连接中断，请检查网络后重试。');
     throw error;
-  } finally {clearTimeout(timeout);}
+  } finally {clearTimeout(timeout);if(controllers.get(channel)===controller)controllers.delete(channel);}
 }
 function invalidate() {
-  invalidateQuote(state); quoteTicket++; controllers.get('quote')?.abort(); clearTimeout(expiration); quotePending=false; quoteError='';
+  invalidateQuote(state); quoteTicket++; controllers.get('quote')?.abort(); clearTimeout(expiration); clearTimeout(quoteTimer); quotePending=false; quoteError='';
 }
 function cartChanged() {
   invalidate(); units=preserveOwners(unitsForCart(state.cart),units,people);confirmed=[];previous=null;renderCart();renderTable();planner.renderPlans();
@@ -62,10 +76,11 @@ async function searchStores(event) {
 }
 async function loadMenu() {
   if(!state.store)return; planner.invalidate(); const ticket=++menuTicket, code=state.store.code;
+  productImages.clear(code);
   invalidate();renderQuote();menu=null;planner.render();$('#categories').innerHTML='';$('#menu-grid').innerHTML='';$('#menu-state').textContent='正在读取这家餐厅的实时菜单…';$('#menu-search').disabled=true;$('#refresh-menu').disabled=true;
   try {const data=await api('menu',{storeCode:code},'menu');if(ticket!==menuTicket||state.store.code!==code)return;menu=data;category=0;$('#menu-search').value='';$('#menu-search').disabled=false;renderMenu();planner.render();}
   catch(e){if(e.name!=='AbortError'&&ticket===menuTicket)$('#menu-state').textContent=`${e.message} 点击“刷新菜单”重试。`;}
-  finally {if(ticket===menuTicket){$('#refresh-menu').disabled=false;planner.render();}}
+  finally {if(ticket===menuTicket){$('#refresh-menu').disabled=false;planner.render();renderTable();}}
 }
 function chooseStore(code) {
   const store=stores.find(s=>s.code===code);if(!store||!store.open)return;
@@ -87,7 +102,8 @@ async function editProduct(code, lineId) {
   const storeCode=state.store.code, ticket=++detailTicket, existing=state.cart.find(c=>c.id===lineId);
   openModal(head(product.name)+'<p class="dialog-description">正在读取可选搭配…</p>','detail');
   try {const detail=await api('detail',{storeCode,code},'detail');if(ticket!==detailTicket||state.store.code!==storeCode||!dialog.open)return;
-    draft={...product,id:existing?.id||`l${++sequence}`,quantity:existing?.quantity||1,detail,selections:existing?clone(existing.selections):selectionsFor(detail),storeCode};renderDetail();
+    const recovered=existing?reconcileSelections(detail,existing.selections):{selections:selectionsFor(detail),changed:false};
+    draft={...product,id:existing?.id||`l${++sequence}`,quantity:existing?.quantity||1,detail,selections:recovered.selections,selectionChanged:recovered.changed,storeCode};renderDetail();
   } catch(e){if(e.name!=='AbortError'&&ticket===detailTicket)$('#dialog-content').innerHTML=head('这份餐品暂时没准备好')+`<p class="error-message">${esc(e.message)}</p>`;}
 }
 function conditionText(p) {
@@ -99,6 +115,7 @@ function renderDetail() {
   const d=draft;if(!d)return;
   $('#dialog-content').innerHTML=head(d.name)+`<div class="detail-intro">${productPicture({...d,image:d.detail.image||d.image})}<div><div class="detail-price">${d.displayPrice===null?'待核价':'¥'+formatMoney(d.displayPrice)}</div><div class="detail-price-label">${d.requiresCard?'购卡条件展示价':'菜单展示价'} · 非本次应付金额</div></div></div><p class="detail-condition">${esc(conditionText(d))}</p><p class="detail-body-note">可更换下面的套餐选项；特调使用门店默认。商品图来自麦当劳菜单，以选配名称和份数为准。</p>${d.detail.rounds.map(r=>`<section class="detail-round"><h3>${esc(r.name)}<span class="round-hint" id="round-hint-${r.id}"></span></h3>${r.choices.map(c=>`<div class="option-row"><span class="option-name">${esc(c.name)}<small>${esc(c.difference)}${c.supportModify?' · 默认特调':''}</small></span><div class="counter"><button data-option="${c.code}" data-round="${r.id}" data-delta="-1" aria-label="减少${esc(c.name)}">−</button><span id="option-${r.id}-${c.code}"></span><button data-option="${c.code}" data-round="${r.id}" data-delta="1" aria-label="增加${esc(c.name)}">＋</button></div></div>`).join('')}</section>`).join('')}<p class="form-error" id="detail-error" role="alert"></p><div class="dialog-actions detail-actions"><div class="detail-quantity">份数<div class="counter"><button data-draft-quantity="-1" aria-label="减少套餐份数">−</button><span id="draft-quantity"></span><button data-draft-quantity="1" aria-label="增加套餐份数">＋</button></div></div><button class="primary" data-action="save-dish">${state.cart.some(c=>c.id===d.id)?'保存并重新核价':'加入餐桌并核价'} →</button></div>`;
   renderCounters();
+  if(d.selectionChanged){const note=document.createElement('p');note.className='detail-body-note';note.setAttribute('role','status');note.textContent='套餐选项已更新：已保留可用搭配，移除失效项并调整超出上限的份数；新增选项组使用门店默认，请核对后保存。';$('#dialog-content').querySelector('.detail-body-note').after(note);}
 }
 function renderCounters() {
   if(!draft)return;$('#draft-quantity').textContent=draft.quantity;
@@ -108,7 +125,8 @@ function renderCounters() {
   $('#detail-error').textContent=selectionError(draft.detail,draft.selections);
 }
 function adjustChoice(button) {
-  const r=draft.detail.rounds.find(r=>r.id===button.dataset.round), choice=r.choices.find(c=>c.code===button.dataset.option), group=draft.selections.find(s=>s.roundId===r.id);
+  const r=draft.detail.rounds.find(r=>r.id===button.dataset.round);if(!r)return;
+  const choice=r.choices.find(c=>c.code===button.dataset.option), group=draft.selections.find(s=>s.roundId===r.id);if(!choice||!group)return;
   const current=group.choices.find(c=>c.code===choice.code), delta=Number(button.dataset.delta),max=choice.max>=0?Math.min(choice.max,r.max):r.max;
   const quantity=Math.max(0,Math.min(max,(current?.quantity||0)+delta));
   // Single-choice rounds behave like a radio choice; multi-quantity rounds permit replacing just one drink.
@@ -140,6 +158,7 @@ function renderQuote() {
   if(modalKind==='share'&&$('#share-text'))$('#share-text').value=makeShareText(state,people,units,confirmed);
 }
 async function requestQuote() {
+  clearTimeout(quoteTimer);
   if(!state.cart.length||!state.store)return;const revision=state.revision,storeCode=state.store.code,ticket=++quoteTicket;
   state.quote=null;quotePending=true;quoteError='';clearTimeout(expiration);renderQuote();
   const items=state.cart.map(c=>({id:c.id,code:c.code,quantity:c.quantity,selections:c.selections}));
@@ -152,6 +171,10 @@ async function requestQuote() {
   } catch(e){if(e.name!=='AbortError'&&ticket===quoteTicket){quoteError=e.message;state.quote=null;}}
   finally {if(ticket===quoteTicket){quotePending=false;renderQuote();}}
 }
+function scheduleQuote() {
+  clearTimeout(quoteTimer);quotePending=true;renderQuote();
+  quoteTimer=setTimeout(requestQuote,350);
+}
 function foodToken(u) {const owner=people.find(p=>p.id===u.owner)?.name||'分享区';return `<button class="food-token" draggable="true" data-unit="${u.id}" aria-label="移动${esc(u.name)}，当前在${esc(owner)}">${productPicture(u)}<span>${esc(u.name)}</span></button>`;}
 function renderTable() {
   $('#people').innerHTML=people.map((p,i)=>`<button class="person-pill" data-person="${p.id}">${avatar(p,i)}${esc(p.name)}<small>编辑</small></button>`).join('');
@@ -159,6 +182,7 @@ function renderTable() {
   const spare=units.filter(u=>!u.owner);$('#spare').innerHTML=`<div class="spare-tray" data-owner=""><div class="spare-label">✳ 分享区 · ${spare.length} 份<small>${units.length?'点餐品，送到饭搭子的餐盘。':'选好餐品后，小快乐会先来到这里。'}</small></div><div class="spare-foods">${spare.map(foodToken).join('')}</div></div>`;
   $('#table-status').textContent=`${units.length} 份餐品 · ${confirmed.length}/${people.length} 个餐盘已记录确认`;
   $('#assign-wishes').disabled=!units.length;$('#undo').disabled=!previous;$('#redistribute').disabled=!units.length;$('#add-person').disabled=people.length>=6;renderQuote();
+  productImages.sync(state.store?.code,units.filter(u=>!u.image&&!menu?.products.some(p=>p.code===u.code&&p.image)).map(u=>u.code));
 }
 function move(id,owner) {const old=units.find(u=>u.id===id);if(!old||old.owner===owner||owner&&!people.some(p=>p.id===owner))return;previous={units:clone(units),confirmed:[...confirmed]};units=units.map(u=>u.id===id?{...u,owner}:u);confirmed=confirmed.filter(p=>p!==owner&&p!==old.owner);renderTable();}
 function showMove(id) {const u=units.find(u=>u.id===id);if(!u)return;openModal(head(`这份${u.name}，给谁？`)+`<p class="dialog-description">只改变餐盘归属，餐单和核价金额保持不变。</p><div class="destination-list">${people.map((p,i)=>`<button class="destination" data-move="${id}" data-to="${p.id}" ${u.owner===p.id?'disabled':''}>${avatar(p,i)}<strong>${esc(p.name)}</strong></button>`).join('')}<button class="destination" data-move="${id}" data-to="" ${u.owner?'':'disabled'}>✳ 先放分享区</button></div>`,'move');}
@@ -177,7 +201,7 @@ document.addEventListener('click',async e=>{
   if(b.dataset.product){editProduct(b.dataset.product);return;}
   if(b.dataset.editLine){const line=state.cart.find(c=>c.id===b.dataset.editLine);editProduct(line.code,line.id);return;}
   if(b.dataset.removeLine){state.cart=state.cart.filter(c=>c.id!==b.dataset.removeLine);cartChanged();if(state.cart.length)requestQuote();return;}
-  if(b.dataset.cartQuantity){const next=state.cart.map(c=>c.id===b.dataset.cartQuantity?{...c,quantity:Math.max(1,Math.min(6,c.quantity+Number(b.dataset.delta)))}:c);if(unitsForCart(next).length>60){notify('这一桌最多 60 份餐品。');return;}state.cart=next;cartChanged();requestQuote();return;}
+  if(b.dataset.cartQuantity){const next=state.cart.map(c=>c.id===b.dataset.cartQuantity?{...c,quantity:Math.max(1,Math.min(6,c.quantity+Number(b.dataset.delta)))}:c);if(unitsForCart(next).length>60){notify('这一桌最多 60 份餐品。');return;}state.cart=next;cartChanged();scheduleQuote();return;}
   if(b.dataset.option&&draft){adjustChoice(b);return;}
   if(b.dataset.draftQuantity&&draft){draft.quantity=Math.max(1,Math.min(6,draft.quantity+Number(b.dataset.draftQuantity)));renderCounters();return;}
   if(b.dataset.unit){showMove(b.dataset.unit);return;}
@@ -206,6 +230,8 @@ document.addEventListener('dragend',()=>document.querySelectorAll('.dragging,.dr
 document.addEventListener('dragover',e=>{const t=e.target.closest('[data-owner]');if(t){e.preventDefault();t.classList.add('drag-over');}});
 document.addEventListener('dragleave',e=>{const t=e.target.closest('[data-owner]');if(t&&!t.contains(e.relatedTarget))t.classList.remove('drag-over');});
 document.addEventListener('drop',e=>{const t=e.target.closest('[data-owner]');if(t){e.preventDefault();t.classList.remove('drag-over');move(e.dataTransfer.getData('text/plain'),t.dataset.owner||null);}});
+window.addEventListener('pagehide',()=>productImages.sync(null,[]));
+window.addEventListener('pageshow',event=>{if(event.persisted)renderTable();});
 function wishStatus(person) {
   const status=personWishStatus(units,person);
   if(!status.wanted)return '';

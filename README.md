@@ -79,7 +79,7 @@ Token 仅由服务端读取，`.env` 已被 Git 忽略。默认位置为可修�
 | 选搭配 | `query-meal-detail` | 读取套餐选项、默认搭配与数量规则 |
 | 核价格 | `calculate-price` | 获取整桌实际报价 |
 
-规划器最多读取 20 款相关产品的详情，组合候选并核价，再按**心愿满足度、实际总价、额外份数**排序，展示最多 3 桌。组合与分配由 JavaScript 完成，无需额外大模型或提示词。
+规划器最多读取 20 款相关产品的详情，综合套餐各组的可换选项与可增选份数，组合候选并核价；最多尝试 6 个候选，成功核价 3 个后停止，再按**心愿满足度、实际总价、额外份数**排序。组合与分配由 JavaScript 完成，无需额外大模型或提示词。
 
 菜单中的购卡条件价、促销标记与本次核价分别展示，方便判断优惠是否适用于这一桌。商品图片按官方编码对应，缺图时显示“暂无图片”。调用流程、参数校验与部署要求见 [MCP_INTEGRATION.md](MCP_INTEGRATION.md)。
 
@@ -103,7 +103,7 @@ Token 仅由服务端读取，`.env` 已被 Git 忽略。默认位置为可修�
 
 ```sh
 # 真实菜单与拼餐流程的相关测试
-node --test tests/live.test.mjs tests/planner.test.mjs
+node --test tests/live.test.mjs tests/planner.test.mjs tests/request-lifecycle.test.mjs tests/selection-recovery.test.mjs
 # JavaScript 语法检查
 npm run check
 ```

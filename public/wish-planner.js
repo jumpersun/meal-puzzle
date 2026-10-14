@@ -97,29 +97,71 @@ function countsFor(line) {
 function remainingAfter(target, counts) { return Object.fromEntries(WISH_KINDS.map(k => [k.id, Math.max(0, target[k.id] - counts[k.id])])); }
 const coverage = (target, counts) => WISH_KINDS.reduce((n, k) => n + Math.min(target[k.id], counts[k.id]), 0);
 function difference(value) { const n = String(value).match(/[0-9]+(?:\.[0-9]+)?/); return n ? Number(n[0]) : 0; }
+const MAX_VARIANT_STATES = 64;
+const compareVariants = (a, b) => a.missing - b.missing || a.extra - b.extra || a.difference - b.difference || a.nonDefault - b.nonDefault;
+const remainingKey = state => WISH_KINDS.map(k => state.remaining[k.id]).join(',');
+function retainVariants(states, key) {
+  const unique = new Map();
+  for (const state of states) {
+    const id = key(state), previous = unique.get(id);
+    if (!previous || compareVariants(state, previous) < 0) unique.set(id, state);
+  }
+  return [...unique.values()].sort(compareVariants).slice(0, MAX_VARIANT_STATES);
+}
 
 function makeVariant(product, detail, target) {
   const line = { ...product, id: 'candidate', quantity: 1, detail, selections: selectionsFor(detail) };
-  let remaining = { ...target };
   if (!detail.rounds.length) return line;
-  const selections = [];
+  if (detail.rounds.length > 20) return null;
+  let states = [{ remaining: { ...target }, missing: sumCounts(target), extra: 0, difference: 0, nonDefault: 0, selections: [] }];
   for (const round of detail.rounds) {
     if (!Number.isInteger(round.min) || !Number.isInteger(round.max) || round.min < 0 || round.min > round.max || round.max > 20) return null;
-    const selected = new Map();
-    for (let slot = 0; slot < round.min; slot++) {
-      const choices = round.choices.filter(c => (selected.get(c.code) || 0) < (c.max >= 0 ? Math.min(c.max, round.max) : round.max));
-      choices.sort((a, b) => {
-        const ak = foodKind(a.name), bk = foodKind(b.name);
-        const am = ak ? remaining[ak] : 0, bm = bk ? remaining[bk] : 0;
-        return Number(bm > 0) - Number(am > 0) || bm - am || difference(a.difference) - difference(b.difference) || Number(b.quantity > 0) - Number(a.quantity > 0);
-      });
-      const chosen = choices[0]; if (!chosen) return null;
-      selected.set(chosen.code, (selected.get(chosen.code) || 0) + 1);
-      const kind = foodKind(chosen.name); if (kind) remaining[kind] = Math.max(0, remaining[kind] - 1);
+    const groups = new Map();
+    for (const choice of round.choices) {
+      const kind = foodKind(choice.name);
+      if (!groups.has(kind)) groups.set(kind, []);
+      groups.get(kind).push(choice);
     }
-    selections.push({ roundId: round.id, choices: [...selected].map(([code, quantity]) => ({ code, quantity })) });
+    // Portions of the same wish kind are interchangeable here. Keep the cheapest
+    // available portions per kind so branching depends on food kinds, not menu size.
+    const buckets = [...groups].map(([kind, choices]) => {
+      const portions = [];
+      choices.sort((a, b) => difference(a.difference) - difference(b.difference) || Number(b.quantity > 0) - Number(a.quantity > 0));
+      for (const choice of choices) {
+        const limit = choice.max >= 0 ? Math.min(choice.max, round.max) : round.max;
+        for (let n = 0; n < Math.floor(limit) && portions.length < round.max; n++) portions.push(choice);
+      }
+      return { kind, portions };
+    }).filter(b => b.portions.length);
+    let active = states.map(state => ({ ...state, used: buckets.map(() => 0) }));
+    const completed = [];
+    for (let slot = 0; slot <= round.max && active.length; slot++) {
+      if (slot >= round.min) for (const state of active) {
+        const selected = new Map();
+        buckets.forEach((bucket, i) => {
+          for (const choice of bucket.portions.slice(0, state.used[i])) selected.set(choice.code, (selected.get(choice.code) || 0) + 1);
+        });
+        completed.push({ ...state, selections: [...state.selections, { roundId: round.id, choices: [...selected].map(([code, quantity]) => ({ code, quantity })) }] });
+      }
+      if (slot === round.max) break;
+      const next = [];
+      for (const state of active) buckets.forEach((bucket, i) => {
+        const choice = bucket.portions[state.used[i]], useful = bucket.kind && state.remaining[bucket.kind] > 0;
+        if (!choice || (slot >= round.min && !useful)) return;
+        const remaining = { ...state.remaining }, used = [...state.used];
+        if (useful) remaining[bucket.kind]--;
+        used[i]++;
+        next.push({ ...state, remaining, used, missing: state.missing - Number(Boolean(useful)), extra: state.extra + Number(!useful),
+          difference: state.difference + difference(choice.difference), nonDefault: state.nonDefault + Number(!choice.quantity) });
+      });
+      active = retainVariants(next, state => `${remainingKey(state)}:${state.used.join(',')}`);
+    }
+    // Keep the stop-at-min path as well as useful additions: a later mandatory
+    // round may already provide an item that looked useful in an optional slot.
+    states = retainVariants(completed, remainingKey);
+    if (!states.length) return null;
   }
-  line.selections = selections;
+  line.selections = states[0].selections;
   return line;
 }
 function selectionKey(line) { return `${line.code}:${JSON.stringify(line.selections)}`; }
@@ -163,9 +205,10 @@ export function buildCandidateCarts(catalog, details, people) {
     if (!unique.has(key)) unique.set(key, candidate);
   }
   const options = [...unique.values()].sort((a, b) => b.matched - a.matched || a.extraCount - b.extraCount || a.reference - b.reference);
-  // Only shortlisted plans are quoted. Reference prices select candidates; they never become payable totals.
+  // Keep a bounded reserve for failed quotes. The API displays at most three
+  // successful plans; reference prices never become payable totals.
   const selected = options.slice(0, 1);
   const complete = options.filter(p => p.matched === (options[0]?.matched || 0)).sort((a, b) => a.reference - b.reference || a.extraCount - b.extraCount);
-  for (const candidate of [...complete, ...options]) if (selected.length < 3 && !selected.includes(candidate)) selected.push(candidate);
+  for (const candidate of [...complete, ...options]) if (selected.length < 6 && !selected.includes(candidate)) selected.push(candidate);
   return selected;
 }
