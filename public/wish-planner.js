@@ -1,4 +1,4 @@
-import { selectionsFor, unitsForCart } from './live-state.js';
+import { selectionsFor, unitsForCart, SHARED_OWNER } from './live-state.js';
 
 export const WISH_KINDS = [
   { id: 'chicken', name: '鸡肉堡 / 卷', icon: '🍔' },
@@ -25,7 +25,7 @@ export function foodKind(name) {
   if (/可乐/.test(name)) return 'cola';
   if (/美式|鲜萃.*咖|浓缩咖啡|卡布奇诺|奶铁|拿铁/.test(name)) return 'coffee';
   if (/鸡.*(?:堡|卷)|麦香鸡|板烧.*堡/.test(name)) return 'chicken';
-  if (/牛.*堡|巨无霸|吉士汉堡|安格斯.*堡/.test(name)) return 'beef';
+  if (/牛.*堡|巨无霸|吉士汉堡|安格斯.*堡|^汉堡包$/.test(name)) return 'beef';
   if (/薯饼/.test(name)) return 'hashbrown';
   if (/粥/.test(name)) return 'porridge';
   if (/麦满分|厚松饼.*堡|火腿.*堡|炒双蛋堡|早安.*卷/.test(name)) return 'breakfast';
@@ -60,7 +60,7 @@ export function personWishStatus(units, person) {
   return assessWishes(units.filter(u => u.owner === person.id), [person]);
 }
 export function preserveOwners(units, previous, people) {
-  const pools = new Map(), validOwners = new Set(people.map(p => p.id));
+  const pools = new Map(), validOwners = new Set([SHARED_OWNER, ...people.map(p => p.id)]);
   for (const unit of previous) {
     const key = `${unit.id.slice(0, unit.id.lastIndexOf('-'))}:${unit.code}`;
     if (!pools.has(key)) pools.set(key, []);

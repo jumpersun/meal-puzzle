@@ -3,7 +3,7 @@ import { formatMoney, unitsForCart } from './live-state.js';
 
 export function createWishPlanner({ getPeople, getStore, getMenu, hasMenu, hasCart, api, cancel, onChange, onApply, picture, escape: esc }) {
   const $ = s => document.querySelector(s);
-  let revision = 0, result = null, pending = false, error = '', expiry;
+  let revision = 0, result = null, pending = false, error = '', expiry, activePerson;
   const kindName = kind => WISH_KINDS.find(k => k.id === kind)?.name || kind;
   const describe = counts => counts.map(c => `${kindName(c.kind)} ×${c.quantity}`).join('、');
   const total = () => Object.values(wishTotals(getPeople())).reduce((a, b) => a + b, 0);
@@ -12,14 +12,16 @@ export function createWishPlanner({ getPeople, getStore, getMenu, hasMenu, hasCa
   }
   function render() {
     const count = total();
+    if(!getPeople().some(p=>p.id===activePerson))activePerson=getPeople()[0]?.id;
     $('#wish-count').textContent = `${getPeople().length} 位搭子 · ${count}/${MAX_WISHES} 份心愿`;
-    $('#wish-people').innerHTML = getPeople().map(p => `<article class="wish-person"><button class="wish-person-name" data-person="${p.id}">${esc(p.name)} <small>改名字</small></button><div class="wish-options">${WISH_KINDS.map(k => {
+    $('#wish-people-tabs').innerHTML=getPeople().map(p=>`<button class="wish-person-tab" data-wish-tab="${p.id}" aria-pressed="${p.id===activePerson}"><strong>${esc(p.name)}</strong><span>${Object.values(p.wants||{}).reduce((n,q)=>n+q,0)} 份心愿</span></button>`).join('');
+    $('#wish-people').innerHTML = getPeople().filter(p=>p.id===activePerson).map(p => `<article class="wish-person"><button class="wish-person-name" data-person="${p.id}">${esc(p.name)} <small>改名字</small></button><div class="wish-options">${WISH_KINDS.map(k => {
       const n = p.wants?.[k.id] || 0;
       return `<div class="wish-option ${n ? 'chosen' : ''}"><span>${k.icon} ${k.name}</span><div class="counter"><button data-wish-person="${p.id}" data-kind="${k.id}" data-delta="-1" aria-label="减少${esc(p.name)}的${k.name}" ${n ? '' : 'disabled'}>−</button><output aria-label="${esc(p.name)}的${k.name}份数">${n}</output><button data-wish-person="${p.id}" data-kind="${k.id}" data-delta="1" aria-label="增加${esc(p.name)}的${k.name}" ${n >= 3 || count >= MAX_WISHES ? 'disabled' : ''}>＋</button></div></div>`;
     }).join('')}</div></article>`).join('');
     $('#wish-add-person').disabled = getPeople().length >= 6;
     $('#generate-plans').disabled = !hasMenu() || !count || pending;
-    $('#generate-plans').textContent = pending ? '正在拼餐并逐桌核价…' : result ? '重新拼一桌 ↻' : '帮我们拼一桌 ✦';
+    $('#generate-plans').textContent = pending ? '正在拼餐并逐桌核价…' : result ? '重新看看怎么拼 ↻' : '看看怎么拼 ✦';
     $('#wish-status').textContent = error || (pending ? '正在查看套餐可换选项，并向麦当劳核清候选价格。通常需要几十秒，可继续调整心愿。' : !getStore() ? '先选上面的餐厅，再来拼这一桌。' : !count ? '点 ＋ 告诉我们每个人想吃什么，也可以先填入示例心愿。' : `${count} 份心愿已准备好，生成方案后仍可调整具体搭配。`);
     $('#wish-status').classList.toggle('error-message', Boolean(error));
     renderPlans();
@@ -50,11 +52,14 @@ export function createWishPlanner({ getPeople, getStore, getMenu, hasMenu, hasCa
   }
   $('#wish-panel').addEventListener('click', e => {
     const button = e.target.closest('button'); if (!button || button.disabled) return;
+    if(button.dataset.wishTab){activePerson=button.dataset.wishTab;render();$('#wish-people-tabs').querySelector(`[data-wish-tab="${activePerson}"]`).focus();return;}
     if (button.dataset.wishPerson) {
       const person = getPeople().find(p => p.id === button.dataset.wishPerson), kind = button.dataset.kind;
       if (!person || !WISH_KINDS.some(k => k.id === kind)) return;
       person.wants ||= {}; person.wants[kind] = Math.max(0, Math.min(3, (person.wants[kind] || 0) + Number(button.dataset.delta)));
-      invalidate(); onChange();
+      const delta=button.dataset.delta;invalidate();onChange();
+      // Re-rendered controls keep keyboard focus on the portion being edited.
+      $('#wish-people').querySelector(`[data-kind="${kind}"][data-delta="${delta}"]:not(:disabled)`)?.focus();
     } else if (button.id === 'wish-example') {
       const examples = exampleWishes(getMenu());
       getPeople().forEach((p, i) => { p.wants = { ...(examples[i] || {}) }; }); invalidate(); onChange();
@@ -62,7 +67,7 @@ export function createWishPlanner({ getPeople, getStore, getMenu, hasMenu, hasCa
     else if (button.dataset.applyPlan) {
       if (!result || result.revision !== revision || result.storeCode !== getStore()?.code || result.expiresAt <= Date.now()) { invalidate(); error = '候选已变化或过期，请重新拼一桌。'; render(); return; }
       const plan = result.plans.find(p => p.id === button.dataset.applyPlan); if (!plan) return;
-      onApply(structuredClone(plan.cart)); renderPlans();
+      onApply(structuredClone(plan.cart),{storeCode:result.storeCode,expiresAt:result.expiresAt}); renderPlans();
     }
   });
   $('#wish-budget').addEventListener('input', invalidate);

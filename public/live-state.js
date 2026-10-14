@@ -1,4 +1,5 @@
 export const formatMoney = cents => Number.isSafeInteger(cents) ? (cents / 100).toFixed(2) : '—';
+export const SHARED_OWNER = 'shared';
 export function selectionsFor(detail) {
   return detail.rounds.map(r => ({ roundId: r.id, choices: r.choices.filter(c => c.quantity > 0).map(c => ({ code: c.code, quantity: c.quantity })) }));
 }
@@ -68,6 +69,8 @@ export function makeShareText(state, people, units, confirmed, now = Date.now())
   for (const p of people) lines.push(`${confirmed.includes(p.id) ? '✓' : '○'} ${p.name}：${units.filter(u => u.owner === p.id).map(u => u.name).join('、') || '暂未分到餐品'}`);
   const spare = units.filter(u => !u.owner);
   if (spare.length) lines.push(`待分配：${spare.map(u => u.name).join('、')}`);
+  const shared = units.filter(u => u.owner === SHARED_OWNER);
+  if (shared.length) lines.push(`大家一起吃：${shared.map(u => u.name).join('、')}`);
   lines.push('', '餐单：', ...state.cart.map(c => `${c.name} ×${c.quantity}`));
   if (valid) lines.push(`官方核价合计：¥${formatMoney(q.total)}`, `核价时间：${new Date(q.quotedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`, '报价为当时快照，不锁价。');
   else lines.push('尚无当前有效报价，请回到页面重新核价。');

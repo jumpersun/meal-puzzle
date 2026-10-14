@@ -49,6 +49,15 @@ test('food wishes match individual portions without treating a meal or coffee de
   for (const [name, kind] of [['麦咖啡™冰美式中杯', 'coffee'], ['燕麦奶铁', 'coffee'], ['麦辣鸡腿堡', 'chicken'], ['中薯条', 'fries'], ['麦乐鸡4块', 'nuggets']]) assert.equal(foodKind(name), kind);
   for (const name of ['麦辣鸡腿汉堡三件套', '全明星双人分享餐八件套', '咖啡阿芙佳朵', '牛奶', '韩式烟熏芝士风味酱']) assert.equal(foodKind(name), null);
 });
+test('the plain hamburger option still satisfies a beef wish after changing a cheese burger', () => {
+  const diner = { id: 'b', wants: { beef: 1 } };
+  const units = [{ id: 'line-1', code: '1000', name: '汉堡包', owner: null }];
+  const assigned = assignWishes(units, [diner]);
+  assert.equal(assigned[0].owner, diner.id);
+  assert.equal(personWishStatus(assigned, diner).matched, 1);
+  assert.equal(foodKind('麦香鸡汉堡包'), 'chicken');
+  assert.equal(foodKind('汉堡包套餐'), null);
+});
 test('real eight-piece combo is configured for one cola and one coffee and every candidate satisfies provider quantities', () => {
   const plans = buildCandidateCarts(catalog, details, people);
   assert.ok(plans.length >= 2 && plans.length <= 6);
